@@ -1,13 +1,12 @@
 import asyncio
 import time
-import os
+import random
 
 from aiogram import Bot, Dispatcher
-from aiogram.types import Message, FSInputFile
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandStart
 
 from config import BOT_TOKEN, CHANNEL_1_ID, CHANNEL_2_ID
-from captcha_utils import generate_captcha
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -27,7 +26,7 @@ RATE_LIMIT_MAX_MESSAGES = 4
 RATE_LIMIT_BLOCK_SECONDS = 20
 
 
-def check_rate_limit(user_id):
+def check_rate_limit(user_id: int):
     now = time.time()
 
     if user_id in rate_limit_storage:
@@ -68,6 +67,37 @@ def check_rate_limit(user_id):
     return True, 0
 
 
+def generate_math_captcha():
+    a = random.randint(1, 10)
+    b = random.randint(1, 10)
+    correct = a + b
+
+    wrong_answers = set()
+    while len(wrong_answers) < 3:
+        candidate = correct + random.choice([-4, -3, -2, -1, 1, 2, 3, 4])
+        if candidate > 0 and candidate != correct:
+            wrong_answers.add(candidate)
+
+    options = list(wrong_answers) + [correct]
+    random.shuffle(options)
+
+    question = f"{a} + {b}"
+    return question, correct, options
+
+
+def build_captcha_keyboard(user_id: int, options: list[int]) -> InlineKeyboardMarkup:
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text=str(option),
+                callback_data=f"captcha:{user_id}:{option}"
+            )
+        ]
+        for option in options
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 @dp.message(CommandStart())
 async def start_handler(message: Message):
     user_id = message.from_user.id
@@ -101,37 +131,43 @@ async def start_handler(message: Message):
         else:
             del cooldown_storage[user_id]
 
-    code, image_path = generate_captcha(user_id)
-    captcha_storage[user_id] = code
+    question, correct_answer, options = generate_math_captcha()
 
-    photo = FSInputFile(image_path)
+    captcha_storage[user_id] = {
+        "answer": correct_answer,
+        "question": question,
+        "options": options
+    }
 
-    await message.answer_photo(
-        photo=photo,
-        caption=(
-            "🔐 Verification Required\n\n"
-            "Please type the code shown in the image to continue."
-        )
+    keyboard = build_captcha_keyboard(user_id, options)
+
+    await message.answer(
+        "🔐 Verification Required\n\n"
+        f"Solve this simple question to continue:\n\n"
+        f"{question} = ?",
+        reply_markup=keyboard
     )
 
 
-@dp.message()
-async def captcha_check(message: Message):
-    user_id = message.from_user.id
+@dp.callback_query(lambda c: c.data and c.data.startswith("captcha:"))
+async def captcha_callback(callback: CallbackQuery):
+    user_id = callback.from_user.id
     now = int(time.time())
 
     allowed, rate_remaining = check_rate_limit(user_id)
     if not allowed:
-        await message.answer(
-            f"🚫 Too many requests detected.\n\nPlease wait {rate_remaining} seconds before trying again."
+        await callback.answer(
+            f"Too many requests. Wait {rate_remaining}s.",
+            show_alert=True
         )
         return
 
     if user_id in block_storage:
         remaining_block = block_storage[user_id] - now
         if remaining_block > 0:
-            await message.answer(
-                f"🚫 Temporary access blocked.\n\nPlease wait {remaining_block} seconds before trying again."
+            await callback.answer(
+                f"Temporary access blocked. Wait {remaining_block}s.",
+                show_alert=True
             )
             return
         else:
@@ -141,27 +177,35 @@ async def captcha_check(message: Message):
     if user_id in cooldown_storage:
         remaining_cooldown = cooldown_storage[user_id] - now
         if remaining_cooldown > 0:
-            await message.answer(
-                f"⏳ Verification cooldown active.\n\nPlease wait {remaining_cooldown} seconds before trying again."
+            await callback.answer(
+                f"Cooldown active. Wait {remaining_cooldown}s.",
+                show_alert=True
             )
             return
         else:
             del cooldown_storage[user_id]
 
     if user_id not in captcha_storage:
+        await callback.answer("Verification expired. Send /start again.", show_alert=True)
         return
 
-    correct_code = captcha_storage[user_id]
-    user_text = (message.text or "").strip().upper()
+    try:
+        _, callback_user_id, selected_value = callback.data.split(":")
+        callback_user_id = int(callback_user_id)
+        selected_value = int(selected_value)
+    except Exception:
+        await callback.answer("Invalid action.", show_alert=True)
+        return
 
-    image_path = f"captcha_{user_id}.png"
+    if callback_user_id != user_id:
+        await callback.answer("This verification is not for you.", show_alert=True)
+        return
 
-    if user_text == correct_code:
+    correct_answer = captcha_storage[user_id]["answer"]
+
+    if selected_value == correct_answer:
         del captcha_storage[user_id]
         attempts_storage[user_id] = 0
-
-        if os.path.exists(image_path):
-            os.remove(image_path)
 
         expire_time = int(time.time()) + 30
 
@@ -204,30 +248,64 @@ If you have any issues, contact support here:
 https://t.me/jokerrefundss
 """
 
-        await message.answer(text)
-
+        await callback.message.edit_text(text)
+        await callback.answer("Verified successfully.")
     else:
         del captcha_storage[user_id]
-
-        if os.path.exists(image_path):
-            os.remove(image_path)
 
         attempts_storage[user_id] = attempts_storage.get(user_id, 0) + 1
         attempts_left = MAX_ATTEMPTS - attempts_storage[user_id]
 
         if attempts_storage[user_id] >= MAX_ATTEMPTS:
             block_storage[user_id] = now + BLOCK_SECONDS
-            await message.answer(
+            await callback.message.edit_text(
                 f"🚫 Too many failed attempts.\n\nPlease wait {BLOCK_SECONDS} seconds before trying again."
             )
+            await callback.answer("Too many failed attempts.", show_alert=True)
             return
 
         cooldown_storage[user_id] = now + COOLDOWN_SECONDS
 
-        await message.answer(
-            f"❌ Incorrect code.\n\n"
+        await callback.message.edit_text(
+            f"❌ Incorrect answer.\n\n"
             f"Please wait {COOLDOWN_SECONDS} seconds before trying again.\n"
             f"Remaining attempts before temporary block: {attempts_left}"
+        )
+        await callback.answer("Incorrect answer.", show_alert=True)
+
+
+@dp.message()
+async def fallback_handler(message: Message):
+    user_id = message.from_user.id
+    now = int(time.time())
+
+    allowed, rate_remaining = check_rate_limit(user_id)
+    if not allowed:
+        await message.answer(
+            f"🚫 Too many requests detected.\n\nPlease wait {rate_remaining} seconds before trying again."
+        )
+        return
+
+    if user_id in block_storage:
+        remaining_block = block_storage[user_id] - now
+        if remaining_block > 0:
+            await message.answer(
+                f"🚫 Temporary access blocked.\n\nPlease wait {remaining_block} seconds before trying again."
+            )
+            return
+
+    if user_id in cooldown_storage:
+        remaining_cooldown = cooldown_storage[user_id] - now
+        if remaining_cooldown > 0:
+            await message.answer(
+                f"⏳ Verification cooldown active.\n\nPlease wait {remaining_cooldown} seconds before trying again."
+            )
+            return
+
+    if user_id in captcha_storage:
+        await message.answer(
+            "⚠️ Please use the buttons below the verification question.\n\n"
+            "If your verification expired, send /start again."
         )
 
 
