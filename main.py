@@ -6,7 +6,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandStart
 
-from config import BOT_TOKEN, CHANNEL_1_ID, CHANNEL_2_ID
+from config import BOT_TOKEN, CHANNEL_1_ID, CHANNEL_2_ID, CHANNEL_3_ID
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -220,31 +220,32 @@ async def captcha_callback(callback: CallbackQuery):
             expire_date=expire_time,
             member_limit=1
         )
+        link3 = await bot.create_chat_invite_link(
+    chat_id=CHANNEL_3_ID,
+    expire_date=expire_time,
+    member_limit=1
+)
 
         text = f"""✅ Access Verified
 
 Welcome. Your access has been successfully granted.
 
-📢 Main Channel:
+📢 Joker Main Channel:
 {link1.invite_link}
 
-🛍️ Storelist:
+🛍️ Joker Storelist:
 {link2.invite_link}
 
-📌 How to Join
-1. Open the Main Channel link
-2. Join the channel immediately
-3. Open the Storelist link
-4. Join before the links expire
-5. If one link does not open, try the other one immediately first
+⭐ Joker Vouches:
+{link3.invite_link}
 
 ⚠️ Important
 • Each link can be used only once
 • Links expire in 30 seconds
-• Join both channels as soon as possible
+• Join the all channels as soon as possible to stay updated
 
 📞 Support
-If you have any issues, contact support here:
+If you have any issues, contact Joker here:
 https://t.me/jokerrefundss
 """
 
